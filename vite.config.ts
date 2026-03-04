@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/3DGSViewerV1/',
+  base: '/SplatViewer/',
   test: {
     environment: 'jsdom',
     include: ['tests/**/*.test.ts'],

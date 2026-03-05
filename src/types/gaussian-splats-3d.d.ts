@@ -17,6 +17,13 @@ declare module '@mkkellogg/gaussian-splats-3d' {
     Instant: number;
   };
 
+  export const SceneFormat: {
+    Splat: number;
+    KSplat: number;
+    Ply: number;
+    Spz: number;
+  };
+
   export interface ViewerOptions {
     selfDrivenMode?: boolean;
     useBuiltInControls?: boolean;
@@ -35,6 +42,7 @@ declare module '@mkkellogg/gaussian-splats-3d' {
   }
 
   export interface AddSplatSceneOptions {
+    format?: number;
     showLoadingUI?: boolean;
     position?: [number, number, number];
     rotation?: [number, number, number, number];
@@ -42,6 +50,7 @@ declare module '@mkkellogg/gaussian-splats-3d' {
     opacity?: number;
     visible?: boolean;
     splatAlphaRemovalThreshold?: number;
+    headers?: Record<string, string>;
   }
 
   export interface SplatBufferHandle {

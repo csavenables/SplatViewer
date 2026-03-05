@@ -50,6 +50,11 @@ interface RevealSceneObject extends THREE.Object3D {
   opacity?: number;
 }
 
+interface ResolvedAssetSource {
+  path: string;
+  format?: number;
+}
+
 function toQuaternionArray(rotationDegrees: [number, number, number]): [number, number, number, number] {
   const euler = new THREE.Euler(
     THREE.MathUtils.degToRad(rotationDegrees[0]),
@@ -100,6 +105,8 @@ export class GaussianSplatRenderer implements SplatRenderer {
   private warnedInteriorFallback = false;
   private sceneGraphMutating = false;
   private sceneMutationQueue: Promise<void> = Promise.resolve();
+  private readonly splatBlobUrlCache = new Map<string, Promise<string>>();
+  private readonly transientBlobUrls = new Set<string>();
 
   async initialize(context: RendererContext): Promise<void> {
     this.viewer = this.createViewer(context);
@@ -329,6 +336,7 @@ export class GaussianSplatRenderer implements SplatRenderer {
     }
     this.handles.length = 0;
     if (!this.viewer) {
+      this.releaseTransientBlobUrls();
       return;
     }
     await this.withSceneMutation(async () => {
@@ -339,6 +347,7 @@ export class GaussianSplatRenderer implements SplatRenderer {
     this.fitData = null;
     this.revealBinding = null;
     this.interiorBinding = null;
+    this.releaseTransientBlobUrls();
   }
 
   private async withSceneMutation<T>(work: () => Promise<T>): Promise<T> {
@@ -363,8 +372,10 @@ export class GaussianSplatRenderer implements SplatRenderer {
     }
     if (assets.length === 1) {
       const asset = assets[0];
+      const source = await this.resolveAssetSource(asset);
       try {
-        await this.viewer.addSplatScene(asset.src, {
+        await this.viewer.addSplatScene(source.path, {
+          format: source.format,
           showLoadingUI: false,
           position: asset.transform.position,
           rotation: toQuaternionArray(asset.transform.rotation),
@@ -380,9 +391,16 @@ export class GaussianSplatRenderer implements SplatRenderer {
     }
 
     try {
+      const resolved = await Promise.all(
+        assets.map(async (asset) => ({
+          asset,
+          source: await this.resolveAssetSource(asset),
+        })),
+      );
       await this.viewer.addSplatScenes(
-        assets.map((asset) => ({
-          path: asset.src,
+        resolved.map(({ asset, source }) => ({
+          path: source.path,
+          format: source.format,
           position: asset.transform.position,
           rotation: toQuaternionArray(asset.transform.rotation),
           scale: asset.transform.scale,
@@ -396,6 +414,70 @@ export class GaussianSplatRenderer implements SplatRenderer {
     } catch (error) {
       throw new Error(this.buildAssetLoadErrorMessage(assets, error));
     }
+  }
+
+  private async resolveAssetSource(asset: SplatAssetConfig): Promise<ResolvedAssetSource> {
+    const extension = getAssetExtension(asset.src);
+    const format = this.resolveSceneFormat(extension);
+
+    if (extension !== '.splat') {
+      return { path: asset.src, format };
+    }
+
+    const blobUrl = await this.getSplatBlobUrl(asset.src);
+    return {
+      path: blobUrl,
+      format,
+    };
+  }
+
+  private resolveSceneFormat(extension: string | null): number | undefined {
+    switch (extension) {
+      case '.splat':
+        return GaussianSplats3D.SceneFormat.Splat;
+      case '.ksplat':
+        return GaussianSplats3D.SceneFormat.KSplat;
+      case '.ply':
+        return GaussianSplats3D.SceneFormat.Ply;
+      case '.spz':
+        return GaussianSplats3D.SceneFormat.Spz;
+      default:
+        return undefined;
+    }
+  }
+
+  private async getSplatBlobUrl(sourceUrl: string): Promise<string> {
+    const cached = this.splatBlobUrlCache.get(sourceUrl);
+    if (cached) {
+      return cached;
+    }
+
+    const fetchPromise = (async () => {
+      const response = await fetch(sourceUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch splat source "${sourceUrl}" (${response.status} ${response.statusText}).`);
+      }
+      const fileData = await response.arrayBuffer();
+      const blobUrl = URL.createObjectURL(new Blob([fileData], { type: 'application/octet-stream' }));
+      this.transientBlobUrls.add(blobUrl);
+      return blobUrl;
+    })();
+
+    this.splatBlobUrlCache.set(sourceUrl, fetchPromise);
+    try {
+      return await fetchPromise;
+    } catch (error) {
+      this.splatBlobUrlCache.delete(sourceUrl);
+      throw error;
+    }
+  }
+
+  private releaseTransientBlobUrls(): void {
+    for (const blobUrl of this.transientBlobUrls) {
+      URL.revokeObjectURL(blobUrl);
+    }
+    this.transientBlobUrls.clear();
+    this.splatBlobUrlCache.clear();
   }
 
   private createSplatHandle(asset: SplatAssetConfig, object3D: THREE.Object3D, sceneIndex: number): SplatHandle {
